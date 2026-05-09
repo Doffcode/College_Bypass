@@ -72,7 +72,14 @@ def get_proxy_status():
         if r:
             mode = r.stdout.strip().strip("'")
             log(f"gsettings proxy mode: {mode}")
-            return f"active  ->  {PROXY_HOST}:{PROXY_PORT}" if mode == "manual" else "inactive"
+            if mode == "manual":
+                h = run_cmd(["gsettings", "get", "org.gnome.system.proxy.http", "host"])
+                p = run_cmd(["gsettings", "get", "org.gnome.system.proxy.http", "port"])
+                host_val = h.stdout.strip().strip("'") if h else ""
+                port_val = p.stdout.strip() if p else ""
+                log(f"proxy http: {host_val}:{port_val}")
+                return f"active  ->  {host_val}:{port_val}"
+            return "inactive"
         return "inactive"
     if de == "kde":
         r = run_cmd(["kreadconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType"])
@@ -116,10 +123,10 @@ def enable_proxy():
     log(f"enable_proxy: de={de}")
     if de in ("gnome", "xfce"):
         run_cmd(["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"])
-        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "http", "host", PROXY_HOST])
-        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "http", "port", str(PROXY_PORT)])
-        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "https", "host", PROXY_HOST])
-        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "https", "port", str(PROXY_PORT)])
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy.http", "host", PROXY_HOST])
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy.http", "port", str(PROXY_PORT)])
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy.https", "host", PROXY_HOST])
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy.https", "port", str(PROXY_PORT)])
         run_cmd(["gsettings", "set", "org.gnome.system.proxy", "ignore-hosts",
                  "['localhost', '127.0.0.0/8', '::1']"])
     elif de == "kde":
@@ -245,7 +252,7 @@ class CollegeBypassUI(Gtk.Window):
         window { background-color: #1a1a2e; }
         label { color: #e0e0e0; }
         GtkBox { background-color: #1a1a2e; }
-        GtkSeparator { background-color: #0f3460; min-height: 1px; }
+        GtkSeparator { background-color: #0f3460; }
         button { background: #16213e; color: #e0e0e0; border-radius: 6px; border: 1px solid #0f3460; padding: 6px 12px; }
         button:hover { background: #1f2f52; }
         """
