@@ -250,7 +250,6 @@ class CollegeBypassUI(Gtk.Window):
         sep2.set_margin_bottom(4)
         sc2 = sep2.get_style_context()
         p2 = Gtk.CssProvider()
-        p2.load_from_data(b"separator { background: #0f3460; min-height: 1px; }")
         sc2.add_provider(p2, 600)
         rows.pack_start(sep2, False, False, 0)
 
