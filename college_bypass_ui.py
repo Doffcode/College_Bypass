@@ -14,6 +14,12 @@ SPOOFDPI_BIN = "/usr/lib/college-bypass/spoofdpi"
 BYPASS_CLI = "/usr/local/bin/college-bypass"
 
 
+def log(msg):
+    with open("/tmp/college_bypass_ui.log", "a") as f:
+        f.write(f"{msg}\n")
+log("--- started ---")
+
+
 def detect_de():
     de = os.environ.get("XDG_CURRENT_DESKTOP", "")
     if "KDE" in de or "plasma" in de:
@@ -25,13 +31,22 @@ def detect_de():
     return "unknown"
 
 
-def get_warp_status():
+def run_cmd(cmd, timeout=30):
     try:
-        r = subprocess.run(["warp-cli", "status"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        log(f"CMD: {' '.join(cmd)} -> {r.returncode} stdout={r.stdout.strip()[:100]} stderr={r.stderr.strip()[:100]}")
+        return r
+    except Exception as e:
+        log(f"CMD EXCEPTION: {' '.join(cmd)} -> {e}")
+        return None
+
+
+def get_warp_status():
+    r = run_cmd(["warp-cli", "status"])
+    if r:
         line = r.stdout.split("\n")[0].strip()
         return line if line else "unknown"
-    except Exception:
-        return "not installed"
+    return "not installed"
 
 
 def is_warp_connected():
@@ -51,44 +66,71 @@ def get_spoofdpi_status():
 
 def get_proxy_status():
     de = detect_de()
+    log(f"get_proxy_status: de={de}")
     if de in ("gnome", "xfce"):
-        try:
-            mode = subprocess.check_output(
-                ["gsettings", "get", "org.gnome.system.proxy", "mode"], text=True
-            ).strip().strip("'")
+        r = run_cmd(["gsettings", "get", "org.gnome.system.proxy", "mode"])
+        if r:
+            mode = r.stdout.strip().strip("'")
+            log(f"gsettings proxy mode: {mode}")
             return f"active  ->  {PROXY_HOST}:{PROXY_PORT}" if mode == "manual" else "inactive"
-        except Exception:
-            return "inactive"
+        return "inactive"
     if de == "kde":
-        try:
-            r = subprocess.check_output(
-                ["kreadconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType"],
-                text=True
-            ).strip()
-            return f"active  ->  {PROXY_HOST}:{PROXY_PORT}" if r == "1" else "inactive"
-        except Exception:
-            return "inactive"
+        r = run_cmd(["kreadconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType"])
+        if r:
+            val = r.stdout.strip()
+            log(f"kde ProxyType: {val}")
+            return f"active  ->  {PROXY_HOST}:{PROXY_PORT}" if val == "1" else "inactive"
+        return "inactive"
     return "inactive"
 
 
-def is_bypass_active():
+def get_bypass_active():
     de = detect_de()
     if de in ("gnome", "xfce"):
-        try:
-            mode = subprocess.check_output(
-                ["gsettings", "get", "org.gnome.system.proxy", "mode"], text=True
-            ).strip().strip("'")
-            return mode == "manual"
-        except Exception:
-            pass
+        r = run_cmd(["gsettings", "get", "org.gnome.system.proxy", "mode"])
+        if r:
+            return r.stdout.strip().strip("'") == "manual"
+        return os.path.isfile(PID_FILE)
+    if de == "kde":
+        r = run_cmd(["kreadconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType"])
+        if r:
+            return r.stdout.strip() == "1"
+        return os.path.isfile(PID_FILE)
     return os.path.isfile(PID_FILE)
 
 
-def run_cmd(cmd, timeout=30):
-    try:
-        subprocess.run(cmd, capture_output=True, timeout=timeout)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+def disable_proxy():
+    de = detect_de()
+    log(f"disable_proxy: de={de}")
+    if de in ("gnome", "xfce"):
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"])
+    elif de == "kde":
+        run_cmd(["kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0"])
+        run_cmd(["dbus-send", "--session", "--type=signal", "/KIO/Scheduler",
+                 "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:''"])
+    log("proxy disabled")
+
+
+def enable_proxy():
+    de = detect_de()
+    log(f"enable_proxy: de={de}")
+    if de in ("gnome", "xfce"):
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"])
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "http", "host", PROXY_HOST])
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "http", "port", str(PROXY_PORT)])
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "https", "host", PROXY_HOST])
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "https", "port", str(PROXY_PORT)])
+        run_cmd(["gsettings", "set", "org.gnome.system.proxy", "ignore-hosts",
+                 "['localhost', '127.0.0.0/8', '::1']"])
+    elif de == "kde":
+        run_cmd(["kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "1"])
+        run_cmd(["kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key",
+                 "httpProxy", f"http://{PROXY_HOST} {PROXY_PORT}"])
+        run_cmd(["kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key",
+                 "httpsProxy", f"http://{PROXY_HOST} {PROXY_PORT}"])
+        run_cmd(["dbus-send", "--session", "--type=signal", "/KIO/Scheduler",
+                 "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:''"])
+    log("proxy enabled")
 
 
 class StatusCard(Gtk.Box):
@@ -96,12 +138,10 @@ class StatusCard(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.set_halign(Gtk.Align.FILL)
         self.set_valign(Gtk.Align.CENTER)
-        self.set_margin_top(4)
-        self.set_margin_bottom(4)
         self.set_margin_start(12)
         self.set_margin_end(12)
-        self.set_margin_top(10)
-        self.set_margin_bottom(10)
+        self.set_margin_top(6)
+        self.set_margin_bottom(6)
 
         self.dot = Gtk.Label()
         self.dot.set_markup("<span color='#999' size='16000'>●</span>")
@@ -120,7 +160,7 @@ class StatusCard(Gtk.Box):
         self.pack_start(self.val, True, True, 0)
 
         self.btn = Gtk.Button()
-        self.btn.set_size_request(80, 32)
+        self.btn.set_size_request(90, 32)
         self.btn.connect("clicked", on_click)
         self.pack_start(self.btn, False, False, 0)
 
@@ -133,7 +173,7 @@ class StatusCard(Gtk.Box):
 class CollegeBypassUI(Gtk.Window):
     def __init__(self):
         super().__init__(title="College Bypass")
-        self.set_default_size(480, 420)
+        self.set_default_size(480, 440)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_resizable(False)
         self.connect("destroy", Gtk.main_quit)
@@ -155,7 +195,6 @@ class CollegeBypassUI(Gtk.Window):
 
         sub = Gtk.Label()
         sub.set_text("DPI Firewall Bypass Utility")
-        sub.set_size_request(200, 20)
         title_box.pack_start(sub, False, False, 0)
 
         status_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -207,7 +246,8 @@ class CollegeBypassUI(Gtk.Window):
         label { color: #e0e0e0; }
         GtkBox { background-color: #1a1a2e; }
         GtkSeparator { background-color: #0f3460; min-height: 1px; }
-        .card { background: #16213e; border-radius: 10px; }
+        button { background: #16213e; color: #e0e0e0; border-radius: 6px; border: 1px solid #0f3460; padding: 6px 12px; }
+        button:hover { background: #1f2f52; }
         """
         p = Gtk.CssProvider()
         p.load_from_data(css)
@@ -216,8 +256,9 @@ class CollegeBypassUI(Gtk.Window):
     def refresh(self):
         warp_ok = is_warp_connected()
         spoof_ok, _ = get_spoofdpi_status()
-        proxy_ok = "active" in get_proxy_status()
-        active = is_bypass_active()
+        proxy_raw = get_proxy_status()
+        proxy_ok = "active" in proxy_raw
+        active = get_bypass_active()
 
         self.warp_card.update(
             get_warp_status(),
@@ -230,9 +271,9 @@ class CollegeBypassUI(Gtk.Window):
             "Stop" if spoof_ok else "Start"
         )
         self.proxy_card.update(
-            get_proxy_status(),
+            proxy_raw,
             "#2ecc71" if proxy_ok else "#e74c3c",
-            "OFF" if proxy_ok else "ON"
+            "Disable" if proxy_ok else "Enable"
         )
 
         self.btn_on.set_sensitive(not active)
@@ -240,15 +281,20 @@ class CollegeBypassUI(Gtk.Window):
         return True
 
     def on_warp(self):
+        log("WARP button clicked")
         if is_warp_connected():
+            log("Disconnecting WARP")
             run_cmd(["warp-cli", "disconnect"])
         else:
+            log("Connecting WARP")
             run_cmd(["warp-cli", "connect"])
         self.refresh()
 
     def on_spoof(self):
+        log("SpoofDPI button clicked")
         _, running = get_spoofdpi_status()
         if running:
+            log("Stopping SpoofDPI")
             try:
                 os.kill(int(open(PID_FILE).read().strip()), 9)
             except Exception:
@@ -258,19 +304,43 @@ class CollegeBypassUI(Gtk.Window):
             except Exception:
                 pass
         else:
+            log("Starting SpoofDPI")
             run_cmd([SPOOFDPI_BIN, "--listen-addr", f"{PROXY_HOST}:{PROXY_PORT}",
                      "--dns-addr", "1.1.1.1:53", "--dns-cache", "--silent"])
         self.refresh()
 
     def on_proxy(self):
-        if is_bypass_active():
-            run_cmd([BYPASS_CLI, "off"])
+        log("Proxy button clicked")
+        if get_bypass_active():
+            log("Disabling proxy")
+            disable_proxy()
         else:
-            run_cmd([BYPASS_CLI, "on"])
+            log("Enabling proxy")
+            enable_proxy()
         self.refresh()
 
     def on_bypass(self, action):
-        run_cmd([BYPASS_CLI, action])
+        log(f"Bypass {action} button clicked")
+        if action == "on":
+            _, spoof_ok = get_spoofdpi_status()
+            if not spoof_ok:
+                run_cmd([SPOOFDPI_BIN, "--listen-addr", f"{PROXY_HOST}:{PROXY_PORT}",
+                         "--dns-addr", "1.1.1.1:53", "--dns-cache", "--silent"])
+                GLib.timeout_add(2000, lambda: (enable_proxy(), self.refresh()))
+                return
+            enable_proxy()
+        else:
+            disable_proxy()
+            _, spoof_running = get_spoofdpi_status()
+            if spoof_running:
+                try:
+                    os.kill(int(open(PID_FILE).read().strip()), 9)
+                except Exception:
+                    pass
+                try:
+                    os.remove(PID_FILE)
+                except Exception:
+                    pass
         self.refresh()
 
 
